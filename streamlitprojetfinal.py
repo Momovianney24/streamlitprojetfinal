@@ -113,7 +113,7 @@ def start_mqtt_client(host: str, port: int):
 # ==========================
 st.set_page_config(page_title="Dashboard streamlit", layout="wide")
 st.title("PROJET FINAL")
-st.title("DASHBOARD STREAMLIT")
+st.title("DASHBOAR   D STREAMLIT")
 
 with st.sidebar:
     st.header("Connexion MQTT")
