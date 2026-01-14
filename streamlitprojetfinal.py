@@ -14,14 +14,9 @@ import paho.mqtt.client as mqtt
 DEFAULT_HOST = os.getenv("MQTT_HOST", "51.103.121.129")
 DEFAULT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
-# Topics attendus (Option A)
+# Topics "préférés" (si tes topics sont exactement ceux-là)
 TOPIC_TEMP = "esp32_1/temp"
-TOPIC_LDR  = "esp32_1/ldr"
-  # luminosité (%)
-
-# Commandes (si utiles chez toi)
-TOPIC_MUTE_ALARM = "esp32/alarm/mute"
-TOPIC_SEUIL      = "esp32_1/seuil"
+TOPIC_LDR  = "esp32_1/ldr"   # luminosité (%)
 
 MAX_POINTS = 200
 
@@ -31,15 +26,22 @@ MAX_POINTS = 200
 # ==========================
 def to_float(x):
     try:
-        return float(x)
+        return float(str(x).replace(",", "."))
     except Exception:
         return None
 
 def to_int(x):
     try:
-        return int(float(x))
+        return int(float(str(x).replace(",", ".")))
     except Exception:
         return None
+
+def pick_first_topic(data: dict, candidates: list[str]):
+    """Retourne (topic, payload) pour le premier topic trouvé dans data."""
+    for t in candidates:
+        if t in data:
+            return t, data.get(t)
+    return None, None
 
 
 # ==========================
@@ -79,7 +81,6 @@ def start_mqtt_client(host: str, port: int):
         ok = (rc == 0)
         state.set_connected(ok)
         if ok:
-            # On écoute tout (pratique pour debug) + on aura la table des topics
             client.subscribe("#")
         else:
             state.set_error(f"MQTT connect rc={rc}")
@@ -127,28 +128,8 @@ with st.sidebar:
     auto_refresh = st.toggle("Auto-refresh", value=False)
     refresh_sec = st.slider("Période refresh (sec)", 1, 10, 2)
 
-    st.divider()
-    st.header("Commandes (optionnel)")
-    if st.button("Mute alarm"):
-        st.session_state["_do_mute"] = True
-
-    seuil = st.number_input("Seuil", min_value=0.0, max_value=100.0, value=20.0, step=0.5)
-    if st.button("Envoyer seuil"):
-        st.session_state["_do_seuil"] = str(seuil)
-
-
+# MQTT
 client, state = start_mqtt_client(host, int(port))
-
-# Commandes
-if st.session_state.get("_do_mute"):
-    client.publish(TOPIC_MUTE_ALARM, "1")
-    st.session_state["_do_mute"] = False
-
-if st.session_state.get("_do_seuil") is not None:
-    client.publish(TOPIC_SEUIL, st.session_state["_do_seuil"])
-    st.session_state["_do_seuil"] = None
-
-
 data, last_ts, is_connected, last_error = state.snapshot()
 
 if last_error:
@@ -158,25 +139,42 @@ else:
 
 
 # ==========================
-# VALUES (Option A)
+# VALUES
 # ==========================
+# Température: topic fixé (tu peux aussi le rendre "candidat" si besoin)
 temperature = to_float(data.get(TOPIC_TEMP))
-luminosity  = to_int(data.get(TOPIC_LDR))
+
+# Luminosité: on accepte plusieurs topics possibles pour éviter le "-" si le topic diffère
+LDR_CANDIDATES = [
+    TOPIC_LDR,                      # esp32_1/ldr (ton choix)
+    "esp32/sensors/luminosity",     # très courant
+    "esp32/sensors/ldr",
+    "esp32_1/luminosity",
+    "esp32/luminosity",
+    "esp32/ldr",
+]
+
+ldr_topic_used, ldr_payload = pick_first_topic(data, LDR_CANDIDATES)
+luminosity = to_int(ldr_payload)
 
 # KPI
 c1, c2, c3 = st.columns(3)
 c1.metric("Température (°C)", "-" if temperature is None else f"{temperature:.1f}")
 c2.metric("Luminosité (%)", "-" if luminosity is None else str(luminosity))
 
-# petit debug: dernière réception
+# Dernière réception
 t_ts = last_ts.get(TOPIC_TEMP)
-l_ts = last_ts.get(TOPIC_LDR)
+l_ts = last_ts.get(ldr_topic_used) if ldr_topic_used else None
 c3.metric(
     "Dernière réception",
     "-" if (t_ts is None and l_ts is None) else f"T:{t_ts.strftime('%H:%M:%S') if t_ts else '-'} / L:{l_ts.strftime('%H:%M:%S') if l_ts else '-'}"
 )
 
+# (optionnel) montrer le topic luminosité réellement utilisé
+st.caption(f"Topic luminosité utilisé: {ldr_topic_used or 'Aucun'}")
+
 st.divider()
+
 
 # ==========================
 # HISTORY + GRAPHS
@@ -215,6 +213,7 @@ with colB:
 
 st.divider()
 
+
 # ==========================
 # MQTT DETAILS
 # ==========================
@@ -237,4 +236,3 @@ with st.expander("Détails MQTT (topics reçus)", expanded=False):
 if auto_refresh:
     time.sleep(refresh_sec)
     st.rerun()
-
