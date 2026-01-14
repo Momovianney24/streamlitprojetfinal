@@ -1,6 +1,5 @@
 import os
 import time
-import json
 import threading
 from datetime import datetime
 
@@ -15,14 +14,20 @@ import paho.mqtt.client as mqtt
 DEFAULT_HOST = os.getenv("MQTT_HOST", "51.103.121.129")
 DEFAULT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
-TOPIC_MUTE_ALARM = "esp32/alarm/mute"
-TOPIC_SEUIL = "esp32_1/seuil"
+# Topics attendus (Option A)
+TOPIC_TEMP = "esp32_1/temp"
+TOPIC_LDR  = "esp32_1/ldr"
+  # luminosité (%)
 
-MAX_POINTS = 200  # points gardés pour les graphes
+# Commandes (si utiles chez toi)
+TOPIC_MUTE_ALARM = "esp32/alarm/mute"
+TOPIC_SEUIL      = "esp32_1/seuil"
+
+MAX_POINTS = 200
 
 
 # ==========================
-# OUTILS
+# UTILS
 # ==========================
 def to_float(x):
     try:
@@ -36,15 +41,9 @@ def to_int(x):
     except Exception:
         return None
 
-def parse_json_safe(s):
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
-
 
 # ==========================
-# ETAT MQTT (thread-safe)
+# MQTT STATE (thread-safe)
 # ==========================
 class MqttState:
     def __init__(self):
@@ -77,9 +76,11 @@ def start_mqtt_client(host: str, port: int):
     state = MqttState()
 
     def on_connect(client, userdata, flags, rc, properties=None):
-        state.set_connected(rc == 0)
-        if rc == 0:
-            client.subscribe("#")  # écoute tous les topics
+        ok = (rc == 0)
+        state.set_connected(ok)
+        if ok:
+            # On écoute tout (pratique pour debug) + on aura la table des topics
+            client.subscribe("#")
         else:
             state.set_error(f"MQTT connect rc={rc}")
 
@@ -127,11 +128,8 @@ with st.sidebar:
     refresh_sec = st.slider("Période refresh (sec)", 1, 10, 2)
 
     st.divider()
-    st.header("Commandes")
+    st.header("Commandes (optionnel)")
     if st.button("Mute alarm"):
-        # mute = 1
-        # (si ton système attend 0/1 tu peux garder)
-        # sinon dis-moi et j'adapte
         st.session_state["_do_mute"] = True
 
     seuil = st.number_input("Seuil", min_value=0.0, max_value=100.0, value=20.0, step=0.5)
@@ -141,7 +139,7 @@ with st.sidebar:
 
 client, state = start_mqtt_client(host, int(port))
 
-# Exécuter les commandes MQTT (depuis session_state)
+# Commandes
 if st.session_state.get("_do_mute"):
     client.publish(TOPIC_MUTE_ALARM, "1")
     st.session_state["_do_mute"] = False
@@ -160,73 +158,32 @@ else:
 
 
 # ==========================
-# EXTRACTION DES VALEURS
+# VALUES (Option A)
 # ==========================
-capteur_json = parse_json_safe(data.get("capteur/data", "")) if "capteur/data" in data else None
+temperature = to_float(data.get(TOPIC_TEMP))
+luminosity  = to_int(data.get(TOPIC_LDR))
 
-# Température
-temperature = to_float(data.get("esp32_1/temp"))
-if temperature is None and isinstance(capteur_json, dict):
-    temperature = to_float(capteur_json.get("temperature"))
-
-# Luminosité (priorité à un topic dédié si tu en as, sinon pot)
-# 1) si tu as un topic luminosity quelque part, mets-le ici
-luminosity = None
-for candidate_topic in [
-    "esp32/sensors/luminosity",
-    "esp32_1/luminosity",
-    "esp32_1/ldr",
-]:
-    if candidate_topic in data:
-        luminosity = to_int(data.get(candidate_topic))
-        break
-
-# 2) fallback: pot dans capteur/data
-if luminosity is None and isinstance(capteur_json, dict):
-    luminosity = to_int(capteur_json.get("pot"))
-
-# Alarm / IR / Status / Seuil
-alarm_raw = data.get("esp32_1/alarm")
-alarm = to_int(alarm_raw) if alarm_raw is not None else None
-if alarm is None and isinstance(capteur_json, dict):
-    a = capteur_json.get("alarm")
-    alarm = 1 if a is True else 0 if a is False else to_int(a)
-
-ir = to_int(data.get("esp32_1/ir"))
-status = data.get("esp32_1/status") or "-"
-
-seuil_raw = data.get("esp32_1/seuil")
-seuil_val = to_float(seuil_raw) if seuil_raw is not None else None
-if seuil_val is None and isinstance(capteur_json, dict):
-    seuil_val = to_float(capteur_json.get("seuil"))
-
-flame = None
-if isinstance(capteur_json, dict):
-    flame = to_int(capteur_json.get("flame"))
-
-
-# ==========================
 # KPI
-# ==========================
-c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-
+c1, c2, c3 = st.columns(3)
 c1.metric("Température (°C)", "-" if temperature is None else f"{temperature:.1f}")
 c2.metric("Luminosité (%)", "-" if luminosity is None else str(luminosity))
-c3.metric("Seuil", "-" if seuil_val is None else f"{seuil_val:g}")
-c4.metric("Flame", "-" if flame is None else str(flame))
-c5.metric("Alarm", "-" if alarm is None else ("ON" if alarm == 1 else "OFF"))
-c6.metric("IR", "-" if ir is None else str(ir))
-c7.metric("Status", status)
+
+# petit debug: dernière réception
+t_ts = last_ts.get(TOPIC_TEMP)
+l_ts = last_ts.get(TOPIC_LDR)
+c3.metric(
+    "Dernière réception",
+    "-" if (t_ts is None and l_ts is None) else f"T:{t_ts.strftime('%H:%M:%S') if t_ts else '-'} / L:{l_ts.strftime('%H:%M:%S') if l_ts else '-'}"
+)
 
 st.divider()
 
 # ==========================
-# GRAPHES (historique en mémoire)
+# HISTORY + GRAPHS
 # ==========================
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
-# Ajout d'un point si on a au moins temp ou luminosité
 now = datetime.now()
 if temperature is not None or luminosity is not None:
     st.session_state["history"].append({
@@ -241,6 +198,7 @@ if not hist_df.empty:
     hist_df = hist_df.set_index("time")
 
 colA, colB = st.columns(2)
+
 with colA:
     st.subheader("Courbe Température")
     if hist_df.empty:
@@ -258,7 +216,7 @@ with colB:
 st.divider()
 
 # ==========================
-# DETAILS MQTT
+# MQTT DETAILS
 # ==========================
 with st.expander("Détails MQTT (topics reçus)", expanded=False):
     rows = []
@@ -275,7 +233,8 @@ with st.expander("Détails MQTT (topics reçus)", expanded=False):
     else:
         st.dataframe(df, width="stretch", hide_index=True)
 
-# Auto refresh
+# Auto-refresh
 if auto_refresh:
     time.sleep(refresh_sec)
     st.rerun()
+
