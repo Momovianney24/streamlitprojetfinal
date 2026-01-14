@@ -14,9 +14,11 @@ import paho.mqtt.client as mqtt
 DEFAULT_HOST = os.getenv("MQTT_HOST", "51.103.121.129")
 DEFAULT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
-# Topics "préférés" (si tes topics sont exactement ceux-là)
+# Temp (fixe)
 TOPIC_TEMP = "esp32_1/temp"
-TOPIC_LDR  = "esp32_1/ldr"   # luminosité (%)
+
+# 👉 Humidité (on va l'afficher dans la case "Luminosité (%)")
+TOPIC_HUM = "esp32_1/humidity"
 
 MAX_POINTS = 200
 
@@ -111,9 +113,8 @@ def start_mqtt_client(host: str, port: int):
 # ==========================
 # UI
 # ==========================
-st.set_page_config(page_title="Dashboard streamlit", layout="wide")
-st.title("PROJET FINAL")
-st.title("DASHBOAR   D STREAMLIT")
+st.set_page_config(page_title="Dashboard ESP32", layout="wide")
+st.title("Dashboard ESP32 (MQTT)")
 
 with st.sidebar:
     st.header("Connexion MQTT")
@@ -142,37 +143,33 @@ else:
 # ==========================
 # VALUES
 # ==========================
-# Température: topic fixé (tu peux aussi le rendre "candidat" si besoin)
 temperature = to_float(data.get(TOPIC_TEMP))
 
-# Luminosité: on accepte plusieurs topics possibles pour éviter le "-" si le topic diffère
-LDR_CANDIDATES = [
-    TOPIC_LDR,                      # esp32_1/ldr (ton choix)
-    "esp32/sensors/luminosity",     # très courant
-    "esp32/sensors/ldr",
-    "esp32_1/luminosity",
-    "esp32/luminosity",
-    "esp32/ldr",
+# Humidité: on accepte plusieurs topics possibles
+HUM_CANDIDATES = [
+    TOPIC_HUM,                 # esp32_1/humidity
+    "esp32/sensors/humidity",  # courant
+    "esp32_1/hum",
+    "esp32/humidity",
 ]
 
-ldr_topic_used, ldr_payload = pick_first_topic(data, LDR_CANDIDATES)
-luminosity = to_int(ldr_payload)
+hum_topic_used, hum_payload = pick_first_topic(data, HUM_CANDIDATES)
+humidity = to_int(hum_payload)  # ou to_float(hum_payload) si tu veux des décimales
 
 # KPI
 c1, c2, c3 = st.columns(3)
 c1.metric("Température (°C)", "-" if temperature is None else f"{temperature:.1f}")
-c2.metric("Luminosité (%)", "-" if luminosity is None else str(luminosity))
 
-# Dernière réception
+# ✅ Afficher l'humidité dans la case "Luminosité (%)"
+c2.metric("Luminosité (%)", "-" if humidity is None else str(humidity))
+
+# Dernière réception (temp + humidity affichée comme L)
 t_ts = last_ts.get(TOPIC_TEMP)
-l_ts = last_ts.get(ldr_topic_used) if ldr_topic_used else None
+l_ts = last_ts.get(hum_topic_used) if hum_topic_used else None
 c3.metric(
     "Dernière réception",
     "-" if (t_ts is None and l_ts is None) else f"T:{t_ts.strftime('%H:%M:%S') if t_ts else '-'} / L:{l_ts.strftime('%H:%M:%S') if l_ts else '-'}"
 )
-
-# (optionnel) montrer le topic luminosité réellement utilisé
-st.caption(f"Topic luminosité utilisé: {ldr_topic_used or 'Aucun'}")
 
 st.divider()
 
@@ -184,11 +181,11 @@ if "history" not in st.session_state:
     st.session_state["history"] = []
 
 now = datetime.now()
-if temperature is not None or luminosity is not None:
+if temperature is not None or humidity is not None:
     st.session_state["history"].append({
         "time": now,
         "temperature": temperature,
-        "luminosity": luminosity,
+        "humidity": humidity,  # on stocke bien humidity
     })
     st.session_state["history"] = st.session_state["history"][-MAX_POINTS:]
 
@@ -206,11 +203,12 @@ with colA:
         st.line_chart(hist_df["temperature"])
 
 with colB:
+    # ✅ On garde le titre "Luminosité" mais on trace l'humidité
     st.subheader("Courbe Luminosité")
     if hist_df.empty:
         st.info("En attente de données...")
     else:
-        st.line_chart(hist_df["luminosity"])
+        st.line_chart(hist_df["humidity"])
 
 st.divider()
 
