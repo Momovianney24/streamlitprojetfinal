@@ -114,7 +114,8 @@ def start_mqtt_client(host: str, port: int):
 # UI
 # ==========================
 st.set_page_config(page_title="Dashboard ESP32", layout="wide")
-st.title("Dashboard ESP32 (MQTT)")
+st.title("PROJET FINAL 304_311")
+st.title("Treamlit(MQTT)")
 
 with st.sidebar:
     st.header("Connexion MQTT")
